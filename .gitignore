@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Env / secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Conda / venv
+.venv/
+venv/
+.conda/
+*.conda
+
+# Mac
+.DS_Store
+
+# SQLite DB + uploads (do NOT commit)
+data/db/*.db
+data/db/*.sqlite*
+data/uploads/
