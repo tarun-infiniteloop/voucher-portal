@@ -47,6 +47,10 @@ def ensure_me():
         return st.session_state["me"]
     return None
 
+def api_get_bytes(path: str, token: str, params: dict | None = None):
+    headers = {"Authorization": f"Bearer {token}"}
+    return requests.get(f"{API_BASE}{path}", headers=headers, params=params, timeout=120)
+
 # ---------- UI ----------
 st.title("Voucher Portal — Demo UI")
 
@@ -86,9 +90,19 @@ if not token:
 
 # ---------- Logged in ----------
 st.subheader("Session")
-c1, c2 = st.columns([3, 1])
+c1, c2 = st.columns([4, 1])
+
 with c1:
-    st.code(me if me else {"note": "Could not load /auth/me"})
+    if me:
+        name = me.get("full_name", "-")
+        email = me.get("email", "-")
+        role = me.get("role", "-")
+        st.markdown(f"**Logged in as:** {name}  \n**Email:** {email}  \n**Role:** `{role}`")
+        with st.expander("Show raw session JSON", expanded=False):
+            st.json(me)
+    else:
+        st.warning("Could not load /auth/me")
+
 with c2:
     if st.button("Logout"):
         logout()
@@ -98,174 +112,214 @@ st.divider()
 role = (me or {}).get("role")
 
 # Tabs: Admin Setup / Client Portal / Admin View
-tabs = st.tabs(["🏢 Admin Setup", "👤 Client Portal", "📂 Admin View"])
+if role == "CLIENT":
+    tabs = st.tabs(["👤 Client Portal"])
+elif role in ("CA_ADMIN", "ADMIN", "CA"):
+    tabs = st.tabs(["🏢 Admin Setup", "📂 Admin View"])
+else:
+    tabs = st.tabs([])
 
 # ---------- Tab 1: Admin Setup ----------
-with tabs[0]:
-    st.header("Admin Setup (create firm, client, client user)")
+if role in ("CA_ADMIN", "ADMIN", "CA"):
+    with tabs[0]:
+        st.header("Admin Setup (create firm, client, client user)")
 
-    if role not in ("CA_ADMIN", "ADMIN", "CA"):
-        st.warning("Login as admin (seeded user) to use setup.")
-    else:
-        st.subheader("1) Create Firm")
-        with st.form("create_firm_form"):
-            firm_name = st.text_input("Firm Name", value="Demo CA Firm")
-            submitted = st.form_submit_button("Create Firm")
-            if submitted:
-                r = api_post("/firm", {"name": firm_name}, token=st.session_state["token"])
+        if role not in ("CA_ADMIN", "ADMIN", "CA"):
+            st.warning("Login as admin (seeded user) to use setup.")
+        else:
+            st.subheader("1) Create Firm")
+            with st.form("create_firm_form"):
+                firm_name = st.text_input("Firm Name", value="Demo CA Firm")
+                submitted = st.form_submit_button("Create Firm")
+                if submitted:
+                    r = api_post("/firm", {"name": firm_name}, token=st.session_state["token"])
+                    if r.status_code == 200:
+                        st.success(f"Firm created ✅ {r.json()}")
+                    else:
+                        st.error(r.text)
+
+            st.subheader("2) List Firm")
+            if st.button("Refresh Firm Info"):
+                r = api_get("/firm", token=st.session_state["token"])
                 if r.status_code == 200:
-                    st.success(f"Firm created ✅ {r.json()}")
+                    st.code(r.json())
                 else:
                     st.error(r.text)
 
-        st.subheader("2) List Firm")
-        if st.button("Refresh Firm Info"):
-            r = api_get("/firm", token=st.session_state["token"])
-            if r.status_code == 200:
-                st.code(r.json())
-            else:
-                st.error(r.text)
+            st.subheader("3) Create Client")
+            with st.form("create_client_form"):
+                client_name = st.text_input("Client Name", value="Ravi Traders")
+                client_code = st.text_input("Client Code", value="RAVI")
+                submitted = st.form_submit_button("Create Client")
+                if submitted:
+                    r = api_post(
+                        "/firm/clients",
+                        {"name": client_name, "code": client_code},
+                        token=st.session_state["token"],
+                    )
+                    if r.status_code == 200:
+                        st.success(f"Client created ✅ {r.json()}")
+                    else:
+                        st.error(r.text)
 
-        st.subheader("3) Create Client")
-        with st.form("create_client_form"):
-            client_name = st.text_input("Client Name", value="Ravi Traders")
-            client_code = st.text_input("Client Code", value="RAVI")
-            submitted = st.form_submit_button("Create Client")
-            if submitted:
-                r = api_post(
-                    "/firm/clients",
-                    {"name": client_name, "code": client_code},
-                    token=st.session_state["token"],
-                )
-                if r.status_code == 200:
-                    st.success(f"Client created ✅ {r.json()}")
-                else:
-                    st.error(r.text)
+            st.subheader("4) Create Client User (login user for client)")
+            with st.form("create_client_user_form"):
+                client_id = st.number_input("Client ID", min_value=1, step=1, value=1)
+                cu_email = st.text_input("Client User Email", value="client1@test.com")
+                cu_name = st.text_input("Client User Full Name", value="Ravi (Client)")
+                cu_password = st.text_input("Client User Password", type="password", value="client123")
+                submitted = st.form_submit_button("Create Client User")
+                if submitted:
+                    r = api_post(
+                        "/users/create-client-user",
+                        {
+                            "client_id": int(client_id),
+                            "email": cu_email,
+                            "full_name": cu_name,
+                            "password": cu_password,
+                        },
+                        token=st.session_state["token"],
+                    )
+                    if r.status_code == 200:
+                        st.success(f"Client user created ✅ {r.json()}")
+                    else:
+                        st.error(r.text)
 
-        st.subheader("4) Create Client User (login user for client)")
-        with st.form("create_client_user_form"):
-            client_id = st.number_input("Client ID", min_value=1, step=1, value=1)
-            cu_email = st.text_input("Client User Email", value="client1@test.com")
-            cu_name = st.text_input("Client User Full Name", value="Ravi (Client)")
-            cu_password = st.text_input("Client User Password", type="password", value="client123")
-            submitted = st.form_submit_button("Create Client User")
-            if submitted:
-                r = api_post(
-                    "/users/create-client-user",
-                    {
-                        "client_id": int(client_id),
-                        "email": cu_email,
-                        "full_name": cu_name,
-                        "password": cu_password,
-                    },
-                    token=st.session_state["token"],
-                )
-                if r.status_code == 200:
-                    st.success(f"Client user created ✅ {r.json()}")
-                else:
-                    st.error(r.text)
-
-        st.info("After creating client user, go to Client Portal tab and login with that email/password.")
+            st.info("After creating client user, go to Client Portal tab and login with that email/password.")
 
 # ---------- Tab 2: Client Portal ----------
-with tabs[1]:
-    st.header("Client Portal (upload + list + stats)")
+if role == "CLIENT":
+    with tabs[0]:
+        st.header("Client Portal (upload + list + stats)")
 
-    if role != "CLIENT":
-        st.warning("Login as CLIENT user to upload vouchers. Use Admin Setup tab to create a client user.")
-    else:
-        st.subheader("📤 Upload Voucher")
+        if role != "CLIENT":
+            st.warning("Login as CLIENT user to upload vouchers. Use Admin Setup tab to create a client user.")
+        else:
+            st.subheader("📤 Upload Voucher")
 
-        with st.form("upload_form", clear_on_submit=True):
-            fy = st.selectbox("Financial Year", ["2024-25", "2025-26"], index=1)
-            month = st.selectbox("Month", ["2026-01", "2026-02", "2026-03"], index=1)
-            vtype = st.selectbox("Voucher Type", ["PURCHASE", "SALES", "EXPENSE", "BANK"], index=0)
-            file = st.file_uploader("Voucher file (PDF/image)", type=["pdf", "png", "jpg", "jpeg"])
-            submitted = st.form_submit_button("Upload", type="primary")
+            with st.form("upload_form", clear_on_submit=True):
+                fy = st.selectbox("Financial Year", ["2024-25", "2025-26"], index=1)
+                # month = st.selectbox("Month", ["2026-01", "2026-02", "2026-03"], index=1)
+                month = st.selectbox(
+                    "Month",
+                    ["All"] + [f"2025-{m:02d}" for m in range(1, 13)] + [f"2026-{m:02d}" for m in range(1, 13)],
+                    index=0,
+                    key="a_month"
+                )
+                vtype = st.selectbox("Voucher Type", ["PURCHASE", "SALES", "EXPENSE", "BANK"], index=0)
+                file = st.file_uploader("Voucher file (PDF/image)", type=["pdf", "png", "jpg", "jpeg"])
+                submitted = st.form_submit_button("Upload", type="primary")
 
-            if submitted:
-                if not file:
-                    st.error("Please select a file")
-                else:
-                    with st.spinner("Uploading..."):
-                        r = api_post_multipart(
-                            "/vouchers/upload",
-                            data={"fy": fy, "month": month, "vtype": vtype},
-                            files={"file": (file.name, file.getvalue())},
-                            token=st.session_state["token"],
-                        )
-                    if r.status_code == 200:
-                        st.success(f"Uploaded ✅ {r.json()}")
+                if submitted:
+                    if not file:
+                        st.error("Please select a file")
                     else:
-                        st.error(f"Upload failed ({r.status_code}): {r.text}")
+                        with st.spinner("Uploading..."):
+                            r = api_post_multipart(
+                                "/vouchers/upload",
+                                data={"fy": fy, "month": month, "vtype": vtype},
+                                files={"file": (file.name, file.getvalue())},
+                                token=st.session_state["token"],
+                            )
+                        if r.status_code == 200:
+                            st.success(f"Uploaded ✅ {r.json()}")
+                        else:
+                            st.error(f"Upload failed ({r.status_code}): {r.text}")
 
-        st.subheader("📂 My Vouchers")
-        fy_filter = st.selectbox("Filter FY", ["All", "2024-25", "2025-26"], index=0, key="c_fy")
-        month_filter = st.selectbox("Filter Month", ["All", "2026-01", "2026-02", "2026-03"], index=0, key="c_month")
+            st.subheader("📂 My Vouchers")
+            fy_filter = st.selectbox("Filter FY", ["All", "2024-25", "2025-26"], index=0, key="c_fy")
+            month_filter = st.selectbox("Filter Month", ["All", "2026-01", "2026-02", "2026-03"], index=0, key="c_month")
 
-        params = {}
-        if fy_filter != "All":
-            params["fy"] = fy_filter
-        if month_filter != "All":
-            params["month"] = month_filter
+            params = {}
+            if fy_filter != "All":
+                params["fy"] = fy_filter
+            if month_filter != "All":
+                params["month"] = month_filter
 
-        r = api_get("/vouchers", token=st.session_state["token"], params=params)
-        if r.status_code != 200:
-            st.error(r.text)
-        else:
-            vouchers = r.json().get("vouchers", [])
-            st.dataframe(vouchers, use_container_width=True)
-
-        st.subheader("📊 My Voucher Summary")
-        r = api_get("/vouchers/stats", token=st.session_state["token"], params=params)
-        if r.status_code != 200:
-            st.error(r.text)
-        else:
-            summary = r.json().get("summary", [])
-            if not summary:
-                st.info("No data")
+            r = api_get("/vouchers", token=st.session_state["token"], params=params)
+            if r.status_code != 200:
+                st.error(r.text)
             else:
-                cols = st.columns(4)
-                for i, row in enumerate(summary):
-                    cols[i % 4].metric(row["vtype"], row["total"])
+                vouchers = r.json().get("vouchers", [])
+                st.dataframe(vouchers, use_container_width=True)
+
+            st.subheader("📊 My Voucher Summary")
+            r = api_get("/reports/stats", token=st.session_state["token"], params=params)
+            if r.status_code != 200:
+                st.error(r.text)
+            else:
+                summary = r.json().get("summary", [])
+                if not summary:
+                    st.info("No data")
+                else:
+                    cols = st.columns(4)
+                    for i, row in enumerate(summary):
+                        cols[i % 4].metric(row["vtype"], row["total"])
 
 # ---------- Tab 3: Admin View ----------
-with tabs[2]:
-    st.header("Admin View (list vouchers + stats per client)")
+if role in ("CA_ADMIN", "ADMIN", "CA"):
+    with tabs[1]:
+        st.header("Admin View (list vouchers + stats per client)")
 
-    if role not in ("CA_ADMIN", "ADMIN", "CA"):
-        st.warning("Login as admin to view all firm vouchers.")
-    else:
-        st.subheader("Filters")
-        fy_filter = st.selectbox("FY", ["All", "2024-25", "2025-26"], index=0, key="a_fy")
-        month_filter = st.selectbox("Month", ["All", "2026-01", "2026-02", "2026-03"], index=0, key="a_month")
-        client_id = st.number_input("Client ID (optional)", min_value=0, step=1, value=0)
-
-        params = {}
-        if fy_filter != "All":
-            params["fy"] = fy_filter
-        if month_filter != "All":
-            params["month"] = month_filter
-        if client_id > 0:
-            params["client_id"] = int(client_id)
-
-        st.subheader("📂 Vouchers")
-        r = api_get("/vouchers", token=st.session_state["token"], params=params)
-        if r.status_code != 200:
-            st.error(r.text)
+        if role not in ("CA_ADMIN", "ADMIN", "CA"):
+            st.warning("Login as admin to view all firm vouchers.")
         else:
-            vouchers = r.json().get("vouchers", [])
-            st.dataframe(vouchers, use_container_width=True)
+            st.subheader("Filters")
+            fy_filter = st.selectbox("FY", ["All", "2024-25", "2025-26"], index=0, key="a_fy")
+            month_filter = st.selectbox(
+                "Month",
+                ["All"] + [f"2025-{m:02d}" for m in range(1, 13)] + [f"2026-{m:02d}" for m in range(1, 13)],
+                index=0,
+                key="a_month"
+            )
 
-        st.subheader("📊 Voucher Summary")
-        r = api_get("/vouchers/stats", token=st.session_state["token"], params=params)
-        if r.status_code != 200:
-            st.error(r.text)
-        else:
-            summary = r.json().get("summary", [])
-            if not summary:
-                st.info("No data")
+            client_id = st.number_input("Client ID (optional)", min_value=0, step=1, value=0)
+
+            params = {}
+            if fy_filter != "All":
+                params["fy"] = fy_filter
+            if month_filter != "All":
+                params["month"] = month_filter
+            if client_id > 0:
+                params["client_id"] = int(client_id)
+
+            st.subheader("📂 Vouchers")
+            r = api_get("/vouchers", token=st.session_state["token"], params=params)
+            if r.status_code != 200:
+                st.error(r.text)
             else:
-                cols = st.columns(4)
-                for i, row in enumerate(summary):
-                    cols[i % 4].metric(row["vtype"], row["total"])
+                vouchers = r.json().get("vouchers", [])
+                st.dataframe(vouchers, use_container_width=True)
+                
+
+            st.subheader("⬇️ Export month ZIP")
+            if client_id <= 0:
+                st.info("Enter a Client ID to enable export.")
+            elif fy_filter == "All" or month_filter == "All":
+                st.info("Select FY and Month to enable export.")
+            else:
+                if st.button("Prepare ZIP"):
+                    r = api_get_bytes("/reports/vouchers-zip", token=st.session_state["token"], params=params)
+                    if r.status_code != 200:
+                        st.error(f"Export failed ({r.status_code}): {r.text}")
+                    else:
+                        filename = f"vouchers_client{int(client_id)}_{fy_filter}_{month_filter}.zip"
+                        st.download_button(
+                            "Download ZIP",
+                            data=r.content,
+                            file_name=filename,
+                            mime="application/zip",
+                        )
+
+            st.subheader("📊 Voucher Summary")
+            r = api_get("/reports/stats", token=st.session_state["token"], params=params)
+            if r.status_code != 200:
+                st.error(r.text)
+            else:
+                summary = r.json().get("summary", [])
+                if not summary:
+                    st.info("No data")
+                else:
+                    cols = st.columns(4)
+                    for i, row in enumerate(summary):
+                        cols[i % 4].metric(row["vtype"], row["total"])
