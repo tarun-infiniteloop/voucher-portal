@@ -1,3 +1,4 @@
+from sqlalchemy.exc import IntegrityError
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -56,11 +57,15 @@ def create_client(payload: ClientCreate, db: Session = Depends(get_db), me: User
         Client.code == payload.code
     ).first()
     if exists:
-        raise HTTPException(status_code=400, detail="Client code already exists for this firm")
+        raise HTTPException(status_code=409, detail="Client code already exists for this firm")
 
     c = Client(firm_id=me.firm_id, name=payload.name, code=payload.code)
     db.add(c)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Client code already exists for this firm")
     db.refresh(c)
     return {"id": c.id, "firm_id": c.firm_id, "name": c.name, "code": c.code}
 

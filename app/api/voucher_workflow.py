@@ -28,7 +28,7 @@ def get_voucher_or_404(db: Session, me: User, voucher_id: int) -> Voucher:
         raise HTTPException(status_code=404, detail="Voucher not found")
     return v
 
-@router.get("/{voucher_id}")
+@router.get("/by-id/{voucher_id}")
 def voucher_detail(voucher_id: int, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
     require_firm(me)
     v = get_voucher_or_404(db, me, voucher_id)

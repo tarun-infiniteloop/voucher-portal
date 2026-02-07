@@ -1,15 +1,36 @@
-from sqlalchemy import String, ForeignKey
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+# from sqlalchemy import Column, Integer, String, ForeignKey, UniqueConstraint
+# from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+# from app.db.base import Base
+
+# class Client(Base):
+#     __tablename__ = "clients"
+
+#     id: Mapped[int] = mapped_column(primary_key=True, index=True)
+#     firm_id: Mapped[int] = mapped_column(ForeignKey("firms.id"), nullable=False, index=True)
+
+#     name: Mapped[str] = mapped_column(String, nullable=False)
+#     code: Mapped[str] = mapped_column(String, nullable=False)  # short unique code per firm
+
+#     firm = relationship("Firm")
+
+
+from sqlalchemy import Column, Integer, String, ForeignKey, UniqueConstraint
+from sqlalchemy.orm import relationship
 from app.db.base import Base
+
 
 class Client(Base):
     __tablename__ = "clients"
 
-    id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    firm_id: Mapped[int] = mapped_column(ForeignKey("firms.id"), nullable=False, index=True)
+    __table_args__ = (
+        UniqueConstraint("firm_id", "code", name="uq_client_firm_code"),
+    )
 
-    name: Mapped[str] = mapped_column(String, nullable=False)
-    code: Mapped[str] = mapped_column(String, nullable=False)  # short unique code per firm
+    id = Column(Integer, primary_key=True)
+    firm_id = Column(Integer, ForeignKey("firms.id"), nullable=False)
 
-    firm = relationship("Firm")
+    name = Column(String, nullable=False)
+    code = Column(String, nullable=False)
+
+    firm = relationship("Firm", back_populates="clients")
