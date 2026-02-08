@@ -1,11 +1,19 @@
 import streamlit as st
 import requests
+import pandas as pd  # add at top once
+import base64
 
 API_BASE = "http://127.0.0.1:8000"
 
 st.set_page_config(page_title="Voucher Portal Demo", layout="wide")
 
 # ---------- HTTP helpers ----------
+STATUS_LABEL = {
+    "RECEIVED": "Pending Review",
+    "QUERY": "Client Clarification",
+    "POSTED": "Posted",
+}
+
 def api_post(path: str, json: dict, token: str | None = None):
     headers = {"Content-Type": "application/json"}
     if token:
@@ -51,8 +59,26 @@ def api_get_bytes(path: str, token: str, params: dict | None = None):
     headers = {"Authorization": f"Bearer {token}"}
     return requests.get(f"{API_BASE}{path}", headers=headers, params=params, timeout=120)
 
+def fetch_clients(token: str):
+    r = api_get("/firm/clients", token=token)
+    if r.status_code != 200:
+        return []
+    return r.json().get("clients", [])
+
+def api_get_file_bytes(voucher_id: int, token: str):
+    return api_get_bytes(f"/vouchers/{voucher_id}/file", token=token, params=None)
+
+def api_patch(path: str, json: dict, token: str):
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+    }
+    return requests.patch(f"{API_BASE}{path}", json=json, headers=headers, timeout=30)
+
 # ---------- UI ----------
-st.title("Voucher Portal — Demo UI")
+st.title("Client Voucher Upload & CA Review Portal")
+st.caption("Collect vouchers from clients, raise queries, and export month-wise ZIP for Tally/Busy.")
+
 
 with st.expander("API status", expanded=False):
     try:
@@ -89,7 +115,7 @@ if not token:
     st.stop()
 
 # ---------- Logged in ----------
-st.subheader("Session")
+st.subheader("Logged-in User")
 c1, c2 = st.columns([4, 1])
 
 with c1:
@@ -113,16 +139,17 @@ role = (me or {}).get("role")
 
 # Tabs: Admin Setup / Client Portal / Admin View
 if role == "CLIENT":
-    tabs = st.tabs(["👤 Client Portal"])
+    tabs = st.tabs(["👤 Upload Vouchers"])
 elif role in ("CA_ADMIN", "ADMIN", "CA"):
-    tabs = st.tabs(["🏢 Admin Setup", "📂 Admin View"])
+    tabs = st.tabs(["🏢 Firm Setup", "📂 Review & Export"])
 else:
     tabs = st.tabs([])
 
 # ---------- Tab 1: Admin Setup ----------
 if role in ("CA_ADMIN", "ADMIN", "CA"):
     with tabs[0]:
-        st.header("Admin Setup (create firm, client, client user)")
+        st.header("Firm Setup")
+        st.caption("Create firm, add clients, and create client logins.")
 
         if role not in ("CA_ADMIN", "ADMIN", "CA"):
             st.warning("Login as admin (seeded user) to use setup.")
@@ -190,24 +217,34 @@ if role in ("CA_ADMIN", "ADMIN", "CA"):
 # ---------- Tab 2: Client Portal ----------
 if role == "CLIENT":
     with tabs[0]:
-        st.header("Client Portal (upload + list + stats)")
+        st.header("Upload Vouchers")
+        st.caption("Upload purchase/sales/expense/bank vouchers for the selected month.")
 
         if role != "CLIENT":
             st.warning("Login as CLIENT user to upload vouchers. Use Admin Setup tab to create a client user.")
         else:
-            st.subheader("📤 Upload Voucher")
+            st.subheader("📤 Upload Accounting Vouchers")
+            st.caption("Upload bills, invoices, or bank statements for bookkeeping.")
 
             with st.form("upload_form", clear_on_submit=True):
                 fy = st.selectbox("Financial Year", ["2024-25", "2025-26"], index=1)
                 # month = st.selectbox("Month", ["2026-01", "2026-02", "2026-03"], index=1)
                 month = st.selectbox(
                     "Month",
-                    ["All"] + [f"2025-{m:02d}" for m in range(1, 13)] + [f"2026-{m:02d}" for m in range(1, 13)],
+                    [f"2025-{m:02d}" for m in range(1, 13)] + [f"2026-{m:02d}" for m in range(1, 13)],
                     index=0,
-                    key="a_month"
+                    key="c_upload_month",
                 )
-                vtype = st.selectbox("Voucher Type", ["PURCHASE", "SALES", "EXPENSE", "BANK"], index=0)
-                file = st.file_uploader("Voucher file (PDF/image)", type=["pdf", "png", "jpg", "jpeg"])
+                vtype = st.selectbox(
+                    "Voucher Category",
+                    ["PURCHASE", "SALES", "EXPENSE", "BANK"],
+                    index=0
+                )
+                file = st.file_uploader(
+                    "Upload bill / invoice / statement (PDF or image)",
+                    type=["pdf", "png", "jpg", "jpeg"]
+                )
+
                 submitted = st.form_submit_button("Upload", type="primary")
 
                 if submitted:
@@ -226,9 +263,17 @@ if role == "CLIENT":
                         else:
                             st.error(f"Upload failed ({r.status_code}): {r.text}")
 
-            st.subheader("📂 My Vouchers")
+            st.subheader("📂 Uploaded Vouchers")
+            st.caption("All vouchers you have uploaded for the selected period.")
+
             fy_filter = st.selectbox("Filter FY", ["All", "2024-25", "2025-26"], index=0, key="c_fy")
-            month_filter = st.selectbox("Filter Month", ["All", "2026-01", "2026-02", "2026-03"], index=0, key="c_month")
+            month_filter = st.selectbox(
+                "Filter Month",
+                ["All"] + [f"2025-{m:02d}" for m in range(1, 13)] + [f"2026-{m:02d}" for m in range(1, 13)],
+                index=0,
+                key="c_month",
+            )
+
 
             params = {}
             if fy_filter != "All":
@@ -241,6 +286,21 @@ if role == "CLIENT":
                 st.error(r.text)
             else:
                 vouchers = r.json().get("vouchers", [])
+                for v in vouchers:
+                    v["status_label"] = STATUS_LABEL.get(v.get("status"), v.get("status"))
+
+                if vouchers:
+                    total = len(vouchers)
+                    pending = sum(1 for v in vouchers if v.get("status") == "RECEIVED")
+                    in_query = sum(1 for v in vouchers if v.get("status") == "QUERY")
+                    posted = sum(1 for v in vouchers if v.get("status") == "POSTED")
+
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Total", total)
+                    m2.metric("Pending review", pending)
+                    m3.metric("Need my reply", in_query)
+                    m4.metric("Posted", posted)
+
                 st.dataframe(vouchers, use_container_width=True)
 
             st.subheader("📊 My Voucher Summary")
@@ -259,7 +319,8 @@ if role == "CLIENT":
 # ---------- Tab 3: Admin View ----------
 if role in ("CA_ADMIN", "ADMIN", "CA"):
     with tabs[1]:
-        st.header("Admin View (list vouchers + stats per client)")
+        st.header("Review & Export")
+        st.caption("Review client uploads, raise queries, mark posted, and export month ZIP.")
 
         if role not in ("CA_ADMIN", "ADMIN", "CA"):
             st.warning("Login as admin to view all firm vouchers.")
@@ -273,7 +334,20 @@ if role in ("CA_ADMIN", "ADMIN", "CA"):
                 key="a_month"
             )
 
-            client_id = st.number_input("Client ID (optional)", min_value=0, step=1, value=0)
+            clients = fetch_clients(st.session_state["token"])
+
+            client_options = [("All clients", 0)]
+            for c in clients:
+                label = f'{c["name"]} ({c["code"]})'
+                client_options.append((label, c["id"]))
+
+            selected_label = st.selectbox(
+                "Client",
+                options=[x[0] for x in client_options],
+                index=0,
+            )
+
+            client_id = dict(client_options).get(selected_label, 0)
 
             params = {}
             if fy_filter != "All":
@@ -283,22 +357,216 @@ if role in ("CA_ADMIN", "ADMIN", "CA"):
             if client_id > 0:
                 params["client_id"] = int(client_id)
 
-            st.subheader("📂 Vouchers")
+            st.subheader("📂 Client Voucher Inbox")
+            st.caption("Vouchers uploaded by clients, pending review or posting.")
+
             r = api_get("/vouchers", token=st.session_state["token"], params=params)
             if r.status_code != 200:
                 st.error(r.text)
             else:
                 vouchers = r.json().get("vouchers", [])
-                st.dataframe(vouchers, use_container_width=True)
-                
+                # --- Quick Overview metrics ---
+                if vouchers:
+                    total = len(vouchers)
+                    received = sum(1 for v in vouchers if v.get("status") == "RECEIVED")
+                    query = sum(1 for v in vouchers if v.get("status") == "QUERY")
+                    posted = sum(1 for v in vouchers if v.get("status") == "POSTED")
 
-            st.subheader("⬇️ Export month ZIP")
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Total vouchers", total)
+                    m2.metric("Received", received)
+                    m3.metric("In query", query)
+                    m4.metric("Posted", posted)
+                else:
+                    st.info("No vouchers for selected filters.")
+
+                for v in vouchers:
+                    v["status_label"] = STATUS_LABEL.get(v.get("status"), v.get("status"))
+
+                df = pd.DataFrame(vouchers)
+                preferred_cols = [c for c in ["id", "client_id", "fy", "month", "vtype", "status_label", "original_filename", "uploaded_at"] if c in df.columns]
+                st.dataframe(df[preferred_cols] if preferred_cols else df, use_container_width=True)
+
+                st.divider()
+                st.subheader("🧾 Review selected voucher")
+
+                if df.empty:
+                    st.info("No vouchers to review.")
+                else:
+                    # pick a voucher to review
+                    selected_vid = st.selectbox(
+                        "Select Voucher ID",
+                        options=df["id"].tolist(),
+                        format_func=lambda x: f"Voucher #{x}",
+                        key="review_voucher_id",
+                    )
+
+                    # Fetch voucher detail + comments
+                    detail = api_get(f"/vouchers/by-id/{int(selected_vid)}", token=st.session_state["token"])
+                    if detail.status_code != 200:
+                        st.error(f"Could not load voucher detail: {detail.text}")
+                    else:
+                        payload = detail.json()
+                        v = payload["voucher"]
+                        comments = payload.get("comments", [])
+
+                        c1, c2 = st.columns([2, 1])
+
+                        with c1:
+                            st.markdown(
+                                f"""
+                                **Voucher ID:** {v["id"]}  
+                                **Client ID:** {v["client_id"]}  
+                                **FY / Month:** {v["fy"]} / {v["month"]}  
+                                **Type:** {v["vtype"]}  
+                                **Status:** `{v["status"]}`  
+                                **File:** {v["original_filename"]}
+                                """
+                            )
+
+                        with c2:
+                            # Download file
+                            file_resp = api_get_file_bytes(int(v["id"]), token=st.session_state["token"])
+                            if file_resp.status_code == 200:
+                                st.download_button(
+                                    "⬇️ Download voucher file",
+                                    data=file_resp.content,
+                                    file_name=v["original_filename"] or f"voucher_{v['id']}",
+                                    mime="application/octet-stream",
+                                    use_container_width=True,
+                                )
+                                show_preview = st.checkbox("👁️ Preview in browser", value=True, key=f"prev_{v['id']}")
+
+                                if show_preview:
+                                    ext = (v.get("original_filename") or "").lower()
+
+                                    # Images
+                                    if ext.endswith((".png", ".jpg", ".jpeg")):
+                                        st.image(file_resp.content, caption=v.get("original_filename"), use_container_width=True)
+
+                                    # PDF (inline iframe)
+                                    elif ext.endswith(".pdf"):
+                                        b64_pdf = base64.b64encode(file_resp.content).decode("utf-8")
+                                        pdf_html = f"""
+                                        <iframe
+                                            src="data:application/pdf;base64,{b64_pdf}"
+                                            width="100%"
+                                            height="650px"
+                                            style="border:1px solid #ddd; border-radius:8px;"
+                                        ></iframe>
+                                        """
+                                        st.markdown(pdf_html, unsafe_allow_html=True)
+
+                                    else:
+                                        st.info("Preview supported only for PDF/JPG/PNG. Use download for other files.")
+
+                            else:
+                                st.warning("File not downloadable (missing or access issue).")
+
+                        st.markdown("### 💬 Comments / Clarifications")
+                        if comments:
+                            for c in comments:
+                                st.markdown(f"- **User {c['user_id']}**: {c['message']}  \n  _{c['created_at']}_")
+                        else:
+                            st.info("No comments yet.")
+
+                        st.markdown("### ✅ CA Actions")
+
+                        colA, colB = st.columns(2)
+
+                        with colA:
+                            with st.form("ca_add_comment_form"):
+                                msg = st.text_area("Write a comment to client (puts voucher in QUERY automatically)", height=80)
+                                submit_comment = st.form_submit_button("Send comment", type="primary")
+                                if submit_comment:
+                                    r = api_post(
+                                        f"/vouchers/{int(v['id'])}/comment",
+                                        {"message": msg},
+                                        token=st.session_state["token"],
+                                    )
+                                    if r.status_code == 200:
+                                        st.success("Comment added ✅")
+                                        st.rerun()
+                                    else:
+                                        st.error(r.text)
+
+                        with colB:
+                            st.caption("Explicit status update (CA only)")
+                            new_status = st.selectbox("Set status", ["RECEIVED", "QUERY", "POSTED"], index=2)
+                            if st.button("Update status", use_container_width=True):
+                                r = api_patch(
+                                    f"/vouchers/{int(v['id'])}/status",
+                                    {"status": new_status},
+                                    token=st.session_state["token"],
+                                )
+                                if r.status_code == 200:
+                                    st.success(f"Updated ✅ {r.json()}")
+                                    st.rerun()
+                                else:
+                                    st.error(r.text)
+
+            st.subheader("🧾 Review Selected Voucher")
+
+            # pick voucher id from the list
+            voucher_ids = [v["id"] for v in vouchers] if vouchers else []
+            selected_vid = st.selectbox("Select Voucher ID", options=voucher_ids)
+
+            if selected_vid:
+                detail = api_get(f"/vouchers/by-id/{selected_vid}", token=st.session_state["token"])
+                if detail.status_code != 200:
+                    st.error(detail.text)
+                else:
+                    payload = detail.json()
+                    v = payload.get("voucher", {})
+                    comments = payload.get("comments", [])
+
+                    st.markdown(f"**File:** {v.get('original_filename')}")
+                    st.markdown(f"**Status:** `{v.get('status')}` → {STATUS_LABEL.get(v.get('status'), v.get('status'))}")
+                    st.markdown(f"**Stored path:** `{v.get('stored_path')}`")
+
+                    st.write("### Comments")
+                    if comments:
+                        st.dataframe(comments, use_container_width=True)
+                    else:
+                        st.info("No comments yet.")
+
+                    st.write("### Actions")
+
+                    colA, colB = st.columns(2)
+
+                    with colA:
+                        msg = st.text_area("Ask client / comment", placeholder="E.g., Please upload GST invoice, this is proforma.")
+                        if st.button("Send Query to Client (sets status QUERY)"):
+                            r = api_post(f"/vouchers/{selected_vid}/comment", {"message": msg}, token=st.session_state["token"])
+                            if r.status_code == 200:
+                                st.success("Query sent ✅")
+                                st.rerun()
+                            else:
+                                st.error(r.text)
+
+                    with colB:
+                        if st.button("Mark as POSTED"):
+                            r = requests.patch(
+                                f"{API_BASE}/vouchers/{selected_vid}/status",
+                                json={"status": "POSTED"},
+                                headers={"Authorization": f"Bearer {st.session_state['token']}"},
+                                timeout=30,
+                            )
+                            if r.status_code == 200:
+                                st.success("Marked POSTED ✅")
+                                st.rerun()
+                            else:
+                                st.error(r.text)
+
+            st.subheader("⬇️ Export for Accounting (ZIP)")
+            st.caption("Download all vouchers for selected client, month, and FY.")
+
             if client_id <= 0:
-                st.info("Enter a Client ID to enable export.")
+                st.info("Select a client to enable export.")
             elif fy_filter == "All" or month_filter == "All":
                 st.info("Select FY and Month to enable export.")
             else:
-                if st.button("Prepare ZIP"):
+                if st.button("Prepare Month-wise ZIP", type="primary"):
                     r = api_get_bytes("/reports/vouchers-zip", token=st.session_state["token"], params=params)
                     if r.status_code != 200:
                         st.error(f"Export failed ({r.status_code}): {r.text}")

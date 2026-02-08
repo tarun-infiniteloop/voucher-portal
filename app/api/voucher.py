@@ -8,6 +8,8 @@ from app.models.user import User
 from app.models.client import Client
 from app.models.voucher import Voucher
 from app.services.storage import build_voucher_path
+import os
+from fastapi.responses import FileResponse
 
 router = APIRouter(prefix="/vouchers", tags=["vouchers"])
 
@@ -118,3 +120,38 @@ def list_vouchers(
             for r in rows
         ]
     }
+
+@router.get("/{voucher_id}/file")
+def download_voucher_file(
+    voucher_id: int,
+    db: Session = Depends(get_db),
+    me: User = Depends(get_current_user),
+):
+    if not me.firm_id:
+        raise HTTPException(status_code=400, detail="User not linked to a firm")
+
+    v = (
+        db.query(Voucher)
+        .filter(Voucher.id == voucher_id, Voucher.firm_id == me.firm_id)
+        .first()
+    )
+    if not v:
+        raise HTTPException(status_code=404, detail="Voucher not found")
+
+    # CLIENT can only access own client's vouchers
+    if me.role == "CLIENT":
+        if not me.client_id or v.client_id != me.client_id:
+            raise HTTPException(status_code=403, detail="Not allowed")
+
+    # CA roles are allowed for their firm (already enforced by firm_id filter)
+
+    if not v.stored_path or not os.path.exists(v.stored_path):
+        raise HTTPException(status_code=404, detail="File not found on server")
+
+    filename = v.original_filename or os.path.basename(v.stored_path)
+
+    return FileResponse(
+        path=v.stored_path,
+        filename=filename,
+        media_type="application/octet-stream",
+    )
